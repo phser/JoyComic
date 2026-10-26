@@ -1,0 +1,126 @@
+name: Build JoyComic iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: JoyComic 上游提交或标签
+        required: true
+        default: caa1605d8d92fb41e98a80df71371ebe32ad6323
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: 获取指定的上游源码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: xiaoqi419/JoyComic
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # 使用项目 .metadata 记录的 Flutter 3.44.6，避免稳定分支更新改变锁定依赖。
+      - name: 获取项目使用的 Flutter SDK
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: flutter/flutter
+          ref: ee80f08bbf97172ec030b8751ceab557177a34a6
+          path: .flutter-sdk
+          persist-credentials: false
+
+      - name: 记录构建环境
+        run: |
+          set -euo pipefail
+          echo "$GITHUB_WORKSPACE/.flutter-sdk/bin" >> "$GITHUB_PATH"
+          export PATH="$GITHUB_WORKSPACE/.flutter-sdk/bin:$PATH"
+          mkdir -p build-evidence
+          flutter config --no-analytics
+          flutter --version --machine > build-evidence/flutter-version.json
+          xcodebuild -version | tee build-evidence/xcode-version.txt
+          pod --version | tee build-evidence/cocoapods-version.txt
+          git rev-parse HEAD > build-evidence/source-commit.txt
+          git rev-list --count HEAD > build-evidence/build-number.txt
+
+      - name: 按官方流程生成 iOS 工程
+        run: |
+          set -euo pipefail
+          flutter create . --platforms=ios --no-pub
+          flutter pub get --enforce-lockfile 2>&1 | tee build-evidence/dependencies.log
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 选择漫画图片用于以图搜图" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 拍摄漫画图片用于以图搜图" ios/Runner/Info.plist
+          # 上游 CI 固定使用 Skia，以保留其针对阅读器黑块问题的构建设置。
+          /usr/libexec/PlistBuddy -c "Add :FLTEnableImpeller bool false" ios/Runner/Info.plist
+          dart run flutter_launcher_icons 2>&1 | tee build-evidence/icons.log
+          cat >> ios/Flutter/Release.xcconfig <<'EOF'
+
+          DEVELOPMENT_TEAM=0000000000
+          CODE_SIGN_STYLE=Manual
+          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_REQUIRED=NO
+          EOF
+
+      - name: 静态分析
+        run: |
+          set -euo pipefail
+          flutter analyze lib test 2>&1 | tee build-evidence/analyze.log
+
+      - name: 执行项目测试
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          flutter test --reporter expanded 2>&1 | tee build-evidence/tests.log
+
+      - name: 构建 iPhone Release 应用
+        run: |
+          set -euo pipefail
+          VERSION="$(awk '/^version:/ {print $2; exit}' pubspec.yaml)"
+          BUILD_NAME="${VERSION%%+*}"
+          BUILD_NUMBER="$(cat build-evidence/build-number.txt)"
+          flutter build ios --release --no-codesign \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER" 2>&1 | tee build-evidence/build.log
+          # 产物必须来自原始业务源码及锁定依赖，不隐式混入兼容补丁或依赖升级。
+          git diff --exit-code -- lib pubspec.yaml pubspec.lock
+
+      - name: 打包并验证 IPA
+        run: |
+          set -euo pipefail
+          APP_PATH="build/ios/iphoneos/Runner.app"
+          test -d "$APP_PATH"
+          mkdir -p output/Payload
+          cp -R "$APP_PATH" output/Payload/
+          plutil -convert json -o build-evidence/app-info.json "$APP_PATH/Info.plist"
+          file "$APP_PATH/Runner" | tee build-evidence/executable.txt
+          file "$APP_PATH/Frameworks/App.framework/App" | tee -a build-evidence/executable.txt
+          ditto -c -k --keepParent output/Payload output/joycomic-unsigned.ipa
+          unzip -tq output/joycomic-unsigned.ipa
+          shasum -a 256 output/joycomic-unsigned.ipa > output/SHA256SUMS.txt
+          cp -R build-evidence output/build-evidence
+
+      - name: 保存安装包与构建记录
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: joycomic-ios
+          path: |
+            output/joycomic-unsigned.ipa
+            output/SHA256SUMS.txt
+            output/build-evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 失败时保存诊断记录
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: joycomic-build-diagnostics
+          path: build-evidence/
+          retention-days: 7
