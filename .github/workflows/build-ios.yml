@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: flutter/flutter
-          ref: ee80f08bbf97172ec030b8751ceab557177a34a6
+          ref: refs/tags/3.44.6
           path: .flutter-sdk
           persist-credentials: false
 
@@ -43,6 +43,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/.flutter-sdk/bin" >> "$GITHUB_PATH"
           export PATH="$GITHUB_WORKSPACE/.flutter-sdk/bin:$PATH"
           mkdir -p build-evidence
+          test "$(git -C .flutter-sdk rev-parse HEAD)" = ee80f08bbf97172ec030b8751ceab557177a34a6
           flutter config --no-analytics
           flutter --version --machine > build-evidence/flutter-version.json
           xcodebuild -version | tee build-evidence/xcode-version.txt
@@ -54,6 +55,10 @@ jobs:
         run: |
           set -euo pipefail
           flutter create . --platforms=ios --no-pub
+          # Flutter 会补建计数器示例测试；只移除生成文件，保留全部上游测试。
+          if ! git ls-files --error-unmatch test/widget_test.dart >/dev/null 2>&1; then
+            rm -f test/widget_test.dart
+          fi
           flutter pub get --enforce-lockfile 2>&1 | tee build-evidence/dependencies.log
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 选择漫画图片用于以图搜图" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 拍摄漫画图片用于以图搜图" ios/Runner/Info.plist
