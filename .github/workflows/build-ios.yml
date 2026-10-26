@@ -83,6 +83,9 @@ jobs:
           flutter analyze --no-fatal-infos lib test 2>&1 | tee build-evidence/analyze.log
 
       - name: 执行项目测试
+        id: tests
+        # 原版源码存在失败测试；先保留报告并完成用户要求的原版编译，末尾仍报告失败状态。
+        continue-on-error: true
         timeout-minutes: 10
         run: |
           set -euo pipefail
@@ -125,6 +128,12 @@ jobs:
             output/build-evidence/
           if-no-files-found: error
           retention-days: 7
+
+      - name: 如实标记上游测试失败
+        if: steps.tests.outcome == 'failure'
+        run: |
+          echo '::error::IPA 已构建，但上游测试未全部通过；详情见安装包随附的 tests.log。'
+          exit 1
 
       - name: 失败时保存诊断记录
         if: failure()
