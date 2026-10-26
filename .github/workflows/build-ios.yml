@@ -59,6 +59,9 @@ jobs:
           if ! git ls-files --error-unmatch test/widget_test.dart >/dev/null 2>&1; then
             rm -f test/widget_test.dart
           fi
+          # 工程生成器可能写入模板锁文件；重新使用上游已提交的依赖锁。
+          git diff -- pubspec.yaml pubspec.lock > build-evidence/project-generation.diff
+          git show HEAD:pubspec.lock > pubspec.lock
           flutter pub get --enforce-lockfile 2>&1 | tee build-evidence/dependencies.log
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 选择漫画图片用于以图搜图" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 拍摄漫画图片用于以图搜图" ios/Runner/Info.plist
